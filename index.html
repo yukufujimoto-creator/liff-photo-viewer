@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>写真確認</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body{font-family:system-ui,-apple-system,"Noto Sans JP";padding:16px}
+    #status{white-space:pre-wrap;color:#333;margin:0 0 10px}
+    .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+    .card{border:1px solid #eee;border-radius:14px;overflow:hidden}
+    img{width:100%;display:block}
+    .cap{padding:8px 10px;font-size:12px;color:#444;word-break:break-all}
+  </style>
+</head>
+<body>
+  <h2>写真確認</h2>
+  <div id="status">読み込み中…</div>
+  <div id="photos" class="grid"></div>
+
+<script>
+/** ====== あなたのGAS WebアプリURL（/exec）を入れる ====== */
+const GAS_EXEC_URL = "https://script.google.com/macros/s/AKfycbwIPgSzJPm2_LshJPmi7KlB5QZjWL-4cy0XJJxeg8Tm-JS2yyuoBelcL6i2ren1pz36/exec";
+
+/** JSONP（CORS回避） */
+function jsonp(params){
+  return new Promise((resolve, reject)=>{
+    const cb = "cb_" + Math.random().toString(36).slice(2);
+    const url = new URL(GAS_EXEC_URL);
+    Object.entries({ ...params, callback: cb }).forEach(([k,v])=>url.searchParams.set(k, v));
+    window[cb] = (data)=>{
+      try{ resolve(data); } finally {
+        delete window[cb];
+        s.remove();
+      }
+    };
+    const s = document.createElement("script");
+    s.src = url.toString();
+    s.onerror = ()=>{ delete window[cb]; reject(new Error("JSONP failed")); };
+    document.head.appendChild(s);
+  });
+}
+
+const $status = document.getElementById("status");
+const $photos = document.getElementById("photos");
+const setStatus = (t)=> $status.textContent = t;
+
+(async()=>{
+  // 1) LIFF ID をGASから取得
+  setStatus("① 設定取得中…");
+  const conf = await jsonp({ api:"1", action:"getConfig" });
+  if(!conf?.ok || !conf?.liffId){ setStatus("設定エラー：LIFF ID未設定"); return; }
+
+  // 2) LIFF init
+  setStatus("② LIFF初期化中…");
+  await liff.init({ liffId: conf.liffId });
+
+  // 3) login
+  if(!liff.isLoggedIn()){
+    setStatus("③ LINEログインへ…");
+    liff.login();
+    return;
+  }
+
+  // 4) profile
+  setStatus("④ プロフィール取得中…");
+  const p = await liff.getProfile();
+
+  // 5) register
+  setStatus("⑤ 登録中…");
+  await jsonp({ api:"1", action:"registerUser", userId:p.userId, displayName:p.displayName });
+
+  // 6) photos
+  setStatus("⑥ 写真取得中…");
+  const r = await jsonp({ api:"1", action:"getMyPhotos", userId:p.userId });
+
+  if(!r.ok){ setStatus("エラー：" + (r.error||"")); return; }
+  if(!r.linked){ setStatus("スタッフ側で紐づけ待ちです"); return; }
+
+  setStatus(r.photos.length ? `写真が ${r.photos.length} 件あります` : "写真がまだありません");
+  $photos.innerHTML = (r.photos||[]).map(x=>`
+    <div class="card">
+      <a href="${x.url}" target="_blank" rel="noopener"><img src="${x.url}" alt=""></a>
+      <div class="cap">${x.name}</div>
+    </div>
+  `).join("");
+})().catch(e=>{
+  setStatus("停止しました： " + (e?.message || e));
+});
+</script>
+</body>
+</html>
