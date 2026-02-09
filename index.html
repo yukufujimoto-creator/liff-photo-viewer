@@ -12,24 +12,26 @@
     .card{border:1px solid #eee;border-radius:14px;overflow:hidden}
     img{width:100%;display:block}
     .cap{padding:8px 10px;font-size:12px;color:#444;word-break:break-all}
+    .muted{color:#666;font-size:12px;margin-top:8px}
   </style>
 </head>
 <body>
   <h2>写真確認</h2>
   <div id="status">読み込み中…</div>
   <div id="photos" class="grid"></div>
+  <div id="debug" class="muted"></div>
 
 <script>
 /** ====== あなたのGAS WebアプリURL（/exec）を入れる ====== */
 const GAS_EXEC_URL = "https://script.google.com/macros/s/AKfycbwIPgSzJPm2_LshJPmi7KlB5QZjWL-4cy0XJJxeg8Tm-JS2yyuoBelcL6i2ren1pz36/exec";
 
-/** JSONP（CORS回避） */
+/** JSONP（CORS回避） + ★cache bust */
 function jsonp(params){
   return new Promise((resolve, reject)=>{
     const cb = "cb_" + Math.random().toString(36).slice(2);
     const url = new URL(GAS_EXEC_URL);
 
-    // ★必須：キャッシュ回避
+    // ★超重要：scriptキャッシュ回避
     url.searchParams.set("t", String(Date.now()));
 
     Object.entries({ ...params, callback: cb }).forEach(([k,v])=>url.searchParams.set(k, v));
@@ -47,16 +49,33 @@ function jsonp(params){
   });
 }
 
-
 const $status = document.getElementById("status");
 const $photos = document.getElementById("photos");
+const $debug  = document.getElementById("debug");
 const setStatus = (t)=> $status.textContent = t;
+
+function setDebug(obj){
+  try{
+    $debug.textContent = obj ? JSON.stringify(obj, null, 2) : "";
+  }catch(e){
+    $debug.textContent = "";
+  }
+}
+
+async function getMyPhotosWithRetry(userId, tries=5){
+  for(let i=0;i<tries;i++){
+    const r = await jsonp({ api:"1", action:"getMyPhotos", userId });
+    if(r && r.ok && r.linked) return r;
+    await new Promise(res=>setTimeout(res, 800));
+  }
+  return null;
+}
 
 (async()=>{
   // 1) LIFF ID をGASから取得
   setStatus("① 設定取得中…");
   const conf = await jsonp({ api:"1", action:"getConfig" });
-  if(!conf?.ok || !conf?.liffId){ setStatus("設定エラー：LIFF ID未設定"); return; }
+  if(!conf?.ok || !conf?.liffId){ setStatus("設定エラー：LIFF ID未設定"); setDebug(conf); return; }
 
   // 2) LIFF init
   setStatus("② LIFF初期化中…");
@@ -77,12 +96,23 @@ const setStatus = (t)=> $status.textContent = t;
   setStatus("⑤ 登録中…");
   await jsonp({ api:"1", action:"registerUser", userId:p.userId, displayName:p.displayName });
 
-  // 6) photos
-  setStatus("⑥ 写真取得中…");
-  const r = await jsonp({ api:"1", action:"getMyPhotos", userId:p.userId });
+  // 6) photos（★リトライあり）
+  setStatus("⑥ 写真取得中…（紐づけ反映待ちを確認中）");
+  const r = await getMyPhotosWithRetry(p.userId, 5);
 
-  if(!r.ok){ setStatus("エラー：" + (r.error||"")); return; }
-  if(!r.linked){ setStatus("スタッフ側で紐づけ待ちです"); return; }
+  if(!r){
+    setStatus("スタッフ側で紐づけ待ちです。\n（紐づけ直後は数秒かかる場合があります）");
+    return;
+  }
+
+  // debug（問題解決したら消してOK）
+  setDebug({ status: r.status, customerKey: r.customerKey, debug: r._debug });
+
+  if(r.status === "LINKED_NO_PHOTOS"){
+    setStatus("紐づけ済みですが、写真がまだありません。");
+    $photos.innerHTML = "";
+    return;
+  }
 
   setStatus(r.photos.length ? `写真が ${r.photos.length} 件あります` : "写真がまだありません");
   $photos.innerHTML = (r.photos||[]).map(x=>`
